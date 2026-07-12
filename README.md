@@ -16,7 +16,7 @@ src/raylib_game
 
 ## Kolam
 
-![$(Game Title)](screenshots/screenshot000.png "$(Game Title)")
+![$(Game Title)](ass/cover.png "$(Kolam)")
 
 ### Description
 
