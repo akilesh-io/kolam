@@ -32,7 +32,7 @@ PLATFORM              ?= PLATFORM_DESKTOP
 PROJECT_NAME          ?= raylib_game
 PROJECT_VERSION       ?= 1.0
 PROJECT_BUILD_PATH    ?= .
-PROJECT_SOURCE_FILES  ?= raylib_game.cpp
+PROJECT_SOURCE_FILES  ?= raylib_game.cpp kolam_scene.cpp visual_novel_scene.cpp
 
 # raylib library variables
 RAYLIB_PATH           ?= C:/raylib/raylib
@@ -152,6 +152,7 @@ endif
 #  -Wall                turns on most, but not all, compiler warnings
 #  -std=c99             defines C language mode (standard C from 1999 revision)
 #  -std=gnu99           defines C language mode (GNU C from 1999 revision)
+#  -std=c++14           defines C++ language mode (C++14 used for project sources)
 #  -Wno-missing-braces  ignore invalid warning (GCC bug 53119)
 #  -Wno-unused-value    ignore unused return values of some functions (i.e. fread())
 #  -D_DEFAULT_SOURCE    use with -std=c99 on Linux and PLATFORM_WEB, required for timespec
@@ -161,7 +162,7 @@ CFLAGS = -Wall -D_DEFAULT_SOURCE -Wno-missing-braces -Wno-unused-value -Wno-poin
 ifeq ($(PLATFORM),PLATFORM_WEB)
     CFLAGS += -std=gnu99
 else
-    CFLAGS += -std=c99
+    CFLAGS += -std=gnu++14
 endif
 
 ifeq ($(BUILD_MODE),DEBUG)
@@ -318,7 +319,8 @@ endif
 
 # Define all object files from source files
 #------------------------------------------------------------------------------------------------
-OBJS = $(patsubst %.c, %.o, $(PROJECT_SOURCE_FILES))
+# Support C++ source files -> object files
+OBJS = $(patsubst %.cpp, %.o, $(PROJECT_SOURCE_FILES))
 
 # Define processes to execute
 #------------------------------------------------------------------------------------------------
@@ -341,6 +343,10 @@ $(PROJECT_NAME): $(OBJS)
 
 # Compile source files
 # NOTE: This pattern will compile every module defined on $(OBJS)
+%.o: %.cpp
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -D$(PLATFORM)
+
+# Also allow compiling .c files if present
 %.o: %.c
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -D$(PLATFORM)
 
