@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The game's window on a phone: no title bar, no status bar, and drawn
+     behind the navigation buttons (they float over the game, see-through)
+     instead of taking a black strip at the side. -->
+<resources>
+  <style name="KolamTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+    <item name="android:windowTranslucentStatus">true</item>
+    <item name="android:windowTranslucentNavigation">true</item>
+  </style>
+</resources>

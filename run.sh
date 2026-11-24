@@ -7,6 +7,8 @@
 #                            reopens right where you were. Close the window to stop.
 set -e
 cd "$(dirname "$0")"
+# xmake refuses to run as root (e.g. in WSL) unless told it is allowed
+[ "$(id -u)" = 0 ] && export XMAKE_ROOT=y
 
 if [ "$1" != "--dev" ]; then
   xmake -y -q

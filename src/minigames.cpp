@@ -233,8 +233,13 @@ private:
                   7, {70, 150, 80, 255});
   }
 
+  // Beside her laptop, just over its right edge. A square screen has no room
+  // beside it, so there they sit further over the laptop.
   Rectangle NotificationRect(size_t i) const {
-    return {440, pile[i].y, 268, 56};
+    const float width = 268;
+    const Rectangle all = FullScreen();
+    const float x = std::fmin(530, all.x + all.width - width - 12);
+    return {x, pile[i].y, width, 56};
   }
 
   void Spawn() {
@@ -447,7 +452,8 @@ public:
       DrawString(saying, 36, 256, 17, {40, 40, 60, 255});
     }
     if (won && wonTimer > 2)
-      DrawTextCentered("click to continue", 360, 690, 16, {80, 40, 30, 255});
+      DrawTextCentered(std::string(tap()) + " to continue", 360, 690, 16,
+                       {80, 40, 30, 255});
   }
 
 private:

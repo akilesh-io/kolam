@@ -10,7 +10,7 @@
     <activity android:name="android.app.NativeActivity" android:exported="true"
               android:screenOrientation="sensorLandscape"
               android:configChanges="orientation|keyboardHidden|screenSize|screenLayout"
-              android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+              android:theme="@style/KolamTheme">
       <meta-data android:name="android.app.lib_name" android:value="main"/>
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>

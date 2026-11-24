@@ -274,6 +274,17 @@ int CheckPages() {
                name, step.label.c_str());
         problems++;
       }
+      if (step.type == StepType::Play && !FindPlayScene(step.play)) {
+        printf("Chapter \"%s\", \"%s\": no scene called \"%s\" (see "
+               "PLAY_SCENE)\n",
+               name, step.label.c_str(), step.play.c_str());
+        problems++;
+      }
+      // The player would rather play than read: no words on a blank page
+      if ((step.type == StepType::Talk) && step.place.empty() &&
+          !step.lines.empty())
+        printf("(note) Chapter \"%s\", \"%s\": words with no picture\n",
+               name, step.label.c_str());
       if (step.type == StepType::Explore && step.hotspots.empty()) {
         printf("Chapter \"%s\", \"%s\": an Explore with nothing to click\n",
                name, step.label.c_str());

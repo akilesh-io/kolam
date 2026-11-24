@@ -38,12 +38,19 @@ void AddMemory(const std::string &memory) {
     progress.memories.push_back(memory);
 }
 
+// A Memory(...) step: once played, Anu has that memory back (by its label)
+bool IsFlashback(const Step &step) {
+  return step.memory &&
+         (step.type == StepType::Talk || step.type == StepType::Play);
+}
+
 int MemoryCount() {
   int count = 1; // KITE_MEMORY, from flying Appa's kite
   for (const Chapter &chapter : Chapters()) {
     for (const Step &step : chapter.steps) {
       for (const Hotspot &hotspot : step.hotspots)
         count += hotspot.memory.empty() ? 0 : 1;
+      count += IsFlashback(step) ? 1 : 0; // remembered as its label
     }
   }
   return count;
@@ -128,6 +135,21 @@ void LoadSettings() {
   ReadNumber(values, "fullscreen", fullscreen, 0, 1);
   ReadNumber(values, "soft_edges", softEdges, 0, 1);
   ReadNumber(values, "screen_shape", settings.screenShape, 0, 3);
+  ReadNumber(values, "text_size", settings.textSize, 0, TEXT_SIZE_COUNT - 1);
+  const char *GESTURE_KEYS[4] = {"learned_tap", "learned_hold", "learned_drag",
+                                 "learned_swipe"};
+  for (int g = 0; g < 4; g++)
+    ReadNumber(values, GESTURE_KEYS[g], settings.gestureUses[g], 0, 99);
+  int version = 1;
+  ReadNumber(values, "settings_version", version, 1, 99);
+#if defined(PLATFORM_PHONE)
+  // Settings saved by the first phone builds (version 1) kept 16:9, which
+  // leaves black bars on a phone: fill the screen, and start text Large
+  if (version < 2) {
+    settings.screenShape = 1;
+    settings.textSize = 1;
+  }
+#endif
   settings.fullscreen = fullscreen == 1;
   settings.softEdges = softEdges == 1;
 }
@@ -141,6 +163,12 @@ void SaveSettings() {
                 {"fullscreen", settings.fullscreen ? "1" : "0"},
                 {"soft_edges", settings.softEdges ? "1" : "0"},
                 {"screen_shape", std::to_string(settings.screenShape)},
+                {"text_size", std::to_string(settings.textSize)},
+                {"learned_tap", std::to_string(settings.gestureUses[0])},
+                {"learned_hold", std::to_string(settings.gestureUses[1])},
+                {"learned_drag", std::to_string(settings.gestureUses[2])},
+                {"learned_swipe", std::to_string(settings.gestureUses[3])},
+                {"settings_version", "2"},
             });
 }
 
@@ -222,8 +250,9 @@ void SaveGameAt(int chapter, int step) {
 }
 
 //------------------------------------------------------------------------------
-// Unlocked chapters: chapters.txt has one line per chapter reached,
-// "<chapter id>=<Progress when it was first reached>"
+// Reached chapters: chapters.txt has one line per chapter reached,
+// "<chapter id>=<Progress when it was first reached>". Every chapter can be
+// played, reached or not; this only remembers how far Anu had got.
 //------------------------------------------------------------------------------
 bool ChapterUnlocked(int chapter) {
   return ReadFile("chapters.txt").count(Chapters()[chapter].id) > 0;
@@ -241,7 +270,28 @@ void UnlockChapter(int chapter) {
 Progress ProgressAtChapterStart(int chapter) {
   const auto values = ReadFile("chapters.txt");
   auto found = values.find(Chapters()[chapter].id);
-  return found == values.end() ? Progress() : ProgressFromText(found->second);
+  if (found != values.end())
+    return ProgressFromText(found->second);
+  // Not reached yet: as if Anu had found every memory on the way here, so
+  // the world has the colour it would have by now
+  Progress p;
+  auto add = [&p](const std::string &memory) {
+    if (!memory.empty() &&
+        std::find(p.memories.begin(), p.memories.end(), memory) ==
+            p.memories.end())
+      p.memories.push_back(memory);
+  };
+  for (int c = 0; c < chapter; c++) {
+    for (const Step &step : Chapters()[c].steps) {
+      if (step.type == StepType::Kite)
+        add(KITE_MEMORY);
+      for (const Hotspot &hotspot : step.hotspots)
+        add(hotspot.memory);
+      if (IsFlashback(step))
+        add(step.label);
+    }
+  }
+  return p;
 }
 
 void DeleteSave() { std::remove((SaveFolder() + "savegame.txt").c_str()); }

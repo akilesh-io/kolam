@@ -9,6 +9,8 @@
 --   xmake f -m debug              debug builds: raylib logs on (see main.cpp), N solves a puzzle page
 --   xmake f -m release            back to normal builds
 --   ./release.sh                  finished games for Linux, Windows and Android (see release.sh)
+--   ./release.sh ios              the iPhone game, an unsigned .ipa (on a Mac only: GitHub
+--                                 builds it on one, see .github/workflows/build.yml)
 --
 -- xmake downloads what it needs by itself the first time (raylib, and Zig for
 -- Windows / portable Linux builds). Everything it makes goes into build/ and .xmake/.
@@ -41,6 +43,10 @@ end
 
 if has_config("portable") then
     add_requires("raylib-portable 6.2", {configs = {toolchains = "zigcc@zig"}})
+elseif is_plat("iphoneos") then
+    -- iPhone: raylib runs on SDL there (see the raylib-sdl package below)
+    add_requires("libsdl2", {configs = {sdlmain = true}})
+    add_requires("raylib-sdl 6.2")
 elseif use_zig then
     add_requires("raylib 6.2", {configs = {toolchains = "zigcc@zig"}})
 else
@@ -78,6 +84,37 @@ package("raylib-portable")
     end)
 package_end()
 
+-- raylib for iPhone. raylib has no iOS layer of its own, but it can run on
+-- SDL's (raylib's PLATFORM_DESKTOP_SDL layer, drawing with OpenGL ES 2), and
+-- SDL runs on iOS. Only built on a Mac (Xcode): see release.sh and README.
+package("raylib-sdl")
+    add_urls("https://github.com/raysan5/raylib/archive/refs/tags/$(version).tar.gz")
+    add_versions("6.2", "df7a13129b1bec9e73a6962efff170beba310ee6eab8f94cd000b7316b4db5ee")
+    add_deps("libsdl2", {configs = {sdlmain = true}})
+    add_frameworks("OpenGLES", "UIKit", "QuartzCore", "CoreGraphics", "CoreAudio",
+                   "AudioToolbox", "AVFoundation", "Foundation")
+    on_install("iphoneos", function (package)
+        -- miniaudio (raylib's sound) needs Objective-C on iOS, for the audio
+        -- session: so its file is built as Objective-C
+        os.cp("src/raudio.c", "src/raudio.m")
+        io.writefile("xmake.lua", [[
+            add_rules("mode.debug", "mode.release")
+            add_requires("libsdl2") -- (xmake hands it the same SDL as above)
+            target("raylib")
+                set_kind("static")
+                set_languages("gnu99")
+                add_packages("libsdl2")
+                set_warnings("none")
+                add_files("src/rcore.c", "src/rshapes.c", "src/rtextures.c",
+                          "src/rtext.c", "src/rmodels.c", "src/raudio.m")
+                add_includedirs("src")
+                add_defines("PLATFORM_DESKTOP_SDL", "GRAPHICS_API_OPENGL_ES2")
+                add_headerfiles("src/raylib.h", "src/raymath.h", "src/rlgl.h")
+        ]])
+        import("package.tools.xmake").install(package)
+    end)
+package_end()
+
 -- Builds every file in assets/ into the game, so the game is one single file.
 -- It writes a short list of the files (assets.cpp) that uses EMBED from
 -- src/game.h; the files' bytes are copied in when that list compiles.
@@ -109,7 +146,13 @@ target("kolam")
     add_rules("embed_assets")
     add_files("src/*.cpp")
     add_includedirs("src")
-    add_packages(has_config("portable") and "raylib-portable" or "raylib")
+    if has_config("portable") then
+        add_packages("raylib-portable")
+    elseif is_plat("iphoneos") then
+        add_packages("raylib-sdl", "libsdl2")
+    else
+        add_packages("raylib")
+    end
     set_warnings("all")
         set_targetdir("$(builddir)/$(plat)")
     set_rundir("$(projectdir)") -- "xmake run" starts it here, so --dev can see src/
@@ -142,5 +185,13 @@ target("kolam")
         add_shflags("-static-libstdc++", "-Wl,-u,ANativeActivity_onCreate", "-Wl,--wrap=fopen", "-Wl,--no-undefined",
                     {force = true})
         add_syslinks("log", "android", "EGL", "GLESv2", "OpenSLES", "m", "dl")
+    elseif is_plat("iphoneos") then
+        -- The game becomes Kolam.app, from ios/Info.plist (name, landscape,
+        -- fullscreen). release.sh zips it into an unsigned .ipa; a sideloading
+        -- tool (Sideloadly, AltStore) signs it with an Apple ID to install it.
+        add_rules("xcode.application")
+        add_files("ios/Info.plist")
+        add_defines("PLATFORM_IOS")
+        set_values("xcode.bundle_identifier", "com.kolam.game")
     end
 target_end()

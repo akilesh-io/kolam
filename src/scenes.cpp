@@ -5,6 +5,8 @@
 // kolam book in puzzle_scene.cpp.)
 #include <cmath>
 
+#include <map>
+
 #include "game.h"
 
 //------------------------------------------------------------------------------
@@ -59,7 +61,8 @@ public:
                      {0, 0, (float)texture.width, (float)texture.height},
                      {0, 0, STAGE_SIZE, STAGE_SIZE}, {0, 0}, 0, WHITE);
     }
-    DrawTextCentered("Press SPACE to skip", STAGE_SIZE / 2.0f, 676, 20,
+    DrawTextCentered(TouchUi() ? "Tap to skip" : "Press SPACE to skip",
+                     STAGE_SIZE / 2.0f, 676, 20,
                      Faded(LIGHTGRAY, time - 1.0f)); // fades in after 1s
   }
 
@@ -77,6 +80,12 @@ private:
 // A Talk with no lines is a quiet moment at its place: it moves on with a
 // click, or by itself after a while.
 //------------------------------------------------------------------------------
+// A flashback on the front step: little Anu, looking up at Amma
+static void DrawLittleAnuAndAmma(float time) {
+  DrawLittleAnu(230, 668, time, 190);
+  DrawAmma(440, 664, time, false);
+}
+
 class DialogueScene : public Scene {
 public:
   explicit DialogueScene(const Step &talk) : step(talk) {}
@@ -93,18 +102,25 @@ public:
       done = time > QUIET_SECONDS || (time > 1.5f && ContinuePressed());
     else
       done = AdvanceDialogue(step.lines, current, typed);
+    // A flashback is a memory come back: it brings colour back to the world
+    if (done && step.memory && !HasMemory(step.label)) {
+      AddMemory(step.label);
+      PlayEffect("bell", 0.45f);
+    }
   }
 
   void Draw() override {
     if (!step.place.empty()) // where it happens, e.g. the terrace at night
-      DrawPlace(step.place, step.night, time);
+      DrawPlace(step.place, step.night, time,
+                step.withAmma ? DrawLittleAnuAndAmma : nullptr);
     else if (step.memory) // a warm sunset for flashbacks
       DrawBandGradient(0, STAGE_SIZE, {255, 196, 120, 255},
                        {236, 112, 99, 255});
     else
       DrawBandGradient(0, STAGE_SIZE, NIGHT_TOP, NIGHT_BOTTOM);
     if (!step.lines.empty())
-      DrawDialogueBox(step.lines[current], typed);
+      // up out of the way when little Anu and Amma are there
+      DrawDialogueBox(step.lines[current], typed, step.withAmma ? 20 : 430);
     else if (time > 1.5f) // a quiet "go on"
       DrawRing({660, 660}, 10, 13, 0, 360, 24,
                Faded(FLOUR, 0.4f + 0.4f * std::sin(time * 3)));
@@ -327,7 +343,7 @@ public:
     DrawTextCentered(chapter.title, 360, 318, 64, fade(0.4f), HAND_FONT);
     DrawTextCentered(chapter.where, 360, 410, 22, fade(0.9f));
     if (time > 1.2f)
-      DrawTextCentered("click to begin", 360, 640, 15,
+      DrawTextCentered(std::string(tap()) + " to begin", 360, 640, 15,
                        Faded(MUTED, 0.5f + 0.4f * std::sin(time * 3)));
   }
 
@@ -341,8 +357,8 @@ private:
 // up/down. Strokes that touch a dot are rejected.
 // After Finish comes the ending, with almost no words: the kolam lies on the
 // doorstep, the sun comes up, colour floods back, and Amma comes to the door.
-// It is the finale of Chapter 8 (not written yet); its full ending, with
-// little Anu, comes with that chapter.
+// It is the finale of Chapter 8, "Five in the Morning"; after it a click goes
+// on to the rest of that chapter.
 //------------------------------------------------------------------------------
 const int DOORSTEP_DOTS = 6;    // dots across and down
 const float DOT_SPACING = 120;  // pixels between dots
@@ -374,12 +390,25 @@ public:
 
     UpdateDrawing();
 
-    if (IsKeyPressed(KEY_H))
+    if (IsKeyPressed(KEY_H) || Clicked(MIRROR_LR_BUTTON))
       mirrorLeftRight = !mirrorLeftRight;
-    if (IsKeyPressed(KEY_V))
+    if (IsKeyPressed(KEY_V) || Clicked(MIRROR_UD_BUTTON))
       mirrorUpDown = !mirrorUpDown;
-    if ((IsKeyPressed(KEY_Z) || Clicked(UNDO_BUTTON)) && !strokes.empty())
+    if (Clicked(DRAW_BUTTON))
+      erasing = false;
+    if (Clicked(ERASE_BUTTON))
+      erasing = true;
+    if ((IsKeyPressed(KEY_Z) || Clicked(UNDO_BUTTON)) && !strokes.empty()) {
+      for (int flipX = 0; flipX <= (mirrorLeftRight ? 1 : 0); flipX++)
+        for (int flipY = 0; flipY <= (mirrorUpDown ? 1 : 0); flipY++) {
+          std::vector<Vector2> flipped;
+          for (const Vector2 &p : strokes.back())
+            flipped.push_back(Flip(p, flipX, flipY));
+          rub.Fade(flipped, 6, {220, 220, 255, 255});
+        }
       strokes.pop_back();
+      PlayEffect("scribble", 0.6f, 0.8f);
+    }
     if (IsKeyPressed(KEY_C) || Clicked(CLEAR_BUTTON))
       strokes.clear();
     if ((IsKeyPressed(KEY_ENTER) || Clicked(FINISH_BUTTON)) && !strokes.empty())
@@ -405,29 +434,41 @@ public:
       DrawMirrored(s, {220, 220, 255, 255});
     if (drawing)
       DrawMirrored(stroke, {150, 180, 255, 200});
+    rub.DrawFading();
+    if (erasing)
+      DrawEraserRing();
 
-    DrawString(TextFormat("Draw around the dots.   H: mirror left/right [%s]   "
-                          "V: mirror up/down [%s]",
-                          mirrorLeftRight ? "on" : "off",
-                          mirrorUpDown ? "on" : "off"),
+    DrawString(erasing ? "Swipe over lines to wipe them away."
+                       : "Draw around the dots.",
                20, 10, 15, Faded(FLOUR, 0.6f));
-    DrawDoorstepButton(FINISH_BUTTON, "Finish");
-    DrawDoorstepButton(UNDO_BUTTON, "Undo (Z)");
-    DrawDoorstepButton(CLEAR_BUTTON, "Clear (C)");
+    DrawDoorstepButton(DRAW_BUTTON, "Draw", !erasing);
+    DrawDoorstepButton(ERASE_BUTTON, "Erase", erasing);
+    DrawDoorstepButton(MIRROR_LR_BUTTON, "Mirror < >", mirrorLeftRight);
+    DrawDoorstepButton(MIRROR_UD_BUTTON, "Mirror ^ v", mirrorUpDown);
+    DrawDoorstepButton(UNDO_BUTTON, "Undo", false);
+    DrawDoorstepButton(CLEAR_BUTTON, "Clear", false);
+    DrawDoorstepButton(FINISH_BUTTON, "Finish", false);
 
     if (messageTimer > 0)
-      DrawString(message, 20, 678, 20,
+      DrawString(message, 20, 632, 20,
                  Faded({255, 255, 180, 255}, messageTimer));
   }
 
 private:
-  const Rectangle FINISH_BUTTON = {370, 670, 100, 40};
-  const Rectangle UNDO_BUTTON = {485, 670, 100, 40};
-  const Rectangle CLEAR_BUTTON = {600, 670, 100, 40};
+  // The buttons along the bottom (keys: H, V, Z, C, Enter)
+  const Rectangle DRAW_BUTTON = {17, 670, 78, 40};
+  const Rectangle ERASE_BUTTON = {105, 670, 78, 40};
+  const Rectangle MIRROR_LR_BUTTON = {193, 670, 104, 40};
+  const Rectangle MIRROR_UD_BUTTON = {307, 670, 104, 40};
+  const Rectangle UNDO_BUTTON = {421, 670, 80, 40};
+  const Rectangle CLEAR_BUTTON = {511, 670, 80, 40};
+  const Rectangle FINISH_BUTTON = {601, 670, 102, 40};
 
   std::vector<std::vector<Vector2>> strokes;
   std::vector<Vector2> stroke; // the one being drawn
   bool drawing = false;
+  bool erasing = false;        // the eraser is chosen (instead of drawing)
+  RubOut rub;                  // what Undo or the eraser took, fading away
   bool mirrorLeftRight = true;
   bool mirrorUpDown = true;
   std::string message;
@@ -435,13 +476,14 @@ private:
   float time = 0;
   float ending = -1; // seconds since Finish; -1 while still drawing
   float startColour = 0;
-  const float END_SECONDS = 11; // then a click goes back to the home screen
+  const float END_SECONDS = 11; // then a click goes on
 
   // The ending: the front step at dawn, with Anu's kolam on it
   void DrawEnding() const {
     const float t = ending;
     DrawPlace("front_step", false, time);
-    DrawBand(580, 140, {150, 120, 95, 255}); // sweep away yesterday's kolam
+    // sweep away yesterday's kolam: a fresh wet patch, as in DrawFrontStep
+    DrawEllipse(360, 618, 204, 42, {158, 118, 82, 255});
     for (const auto &s : strokes)            // her kolam, lying on the ground
       DrawMirrored(s, FLOUR, {360, 648}, 0.24f, 2.5f);
     for (int y = 0; y < DOORSTEP_DOTS; y++) {
@@ -469,11 +511,53 @@ private:
     }
   }
 
-  // Press, drag and release the mouse to draw one stroke
+  // The eraser: wipes away the bits of every stroke (in any of its mirror
+  // images) within reach of `p`, splitting a stroke where it's wiped through
+  void EraseAt(Vector2 p) {
+    std::vector<std::vector<Vector2>> kept;
+    bool erased = false;
+    for (const std::vector<Vector2> &s : strokes) {
+      std::vector<Vector2> piece;
+      for (size_t i = 0; i < s.size(); i++) {
+        bool wiped = false;
+        for (int flipX = 0; flipX <= (mirrorLeftRight ? 1 : 0); flipX++)
+          for (int flipY = 0; flipY <= (mirrorUpDown ? 1 : 0); flipY++) {
+            const Vector2 q = Flip(s[i], flipX, flipY);
+            wiped = wiped || std::hypot(q.x - p.x, q.y - p.y) < ERASER_RADIUS;
+          }
+        if (!wiped) {
+          piece.push_back(s[i]);
+          continue;
+        }
+        erased = true;
+        if (i > 0) // what's wiped fades away, in every mirror image
+          for (int flipX = 0; flipX <= (mirrorLeftRight ? 1 : 0); flipX++)
+            for (int flipY = 0; flipY <= (mirrorUpDown ? 1 : 0); flipY++)
+              rub.Fade({Flip(s[i - 1], flipX, flipY), Flip(s[i], flipX, flipY)},
+                       6, {220, 220, 255, 255});
+        if (piece.size() >= 2)
+          kept.push_back(piece);
+        piece.clear();
+      }
+      if (piece.size() >= 2)
+        kept.push_back(piece);
+    }
+    if (erased) {
+      strokes = kept;
+      PlayLoop("pencil", 0.3f);
+    }
+  }
+
+  // Press, drag and release the mouse to draw one stroke (or, with the
+  // eraser, swipe to wipe strokes away)
   void UpdateDrawing() {
     const Vector2 mouse = GetMousePosition();
     const bool overButtons = mouse.y > FINISH_BUTTON.y - 10;
-
+    if (erasing) {
+      if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !overButtons)
+        EraseAt(mouse);
+      return;
+    }
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !overButtons) {
       stroke = {mouse};
       drawing = !TouchesDot(mouse, mouse);
@@ -503,8 +587,10 @@ private:
   bool TouchesDot(Vector2 a, Vector2 b) const {
     for (int y = 0; y < DOORSTEP_DOTS; y++) {
       for (int x = 0; x < DOORSTEP_DOTS; x++) {
-        if (CheckCollisionPointLine(Dot(x, y), a, b, (int)TOUCH_DISTANCE) ||
-            CheckCollisionPointCircle(Dot(x, y), b, TOUCH_DISTANCE))
+        // a fingertip is less exact than a mouse: only right on a dot counts
+        const float near = TouchUi() ? 3 : TOUCH_DISTANCE;
+        if (CheckCollisionPointLine(Dot(x, y), a, b, (int)near) ||
+            CheckCollisionPointCircle(Dot(x, y), b, near))
           return true;
       }
     }
@@ -550,9 +636,12 @@ private:
   }
 
   // Lights up red under the mouse
-  static void DrawDoorstepButton(Rectangle button, const char *label) {
-    const bool hover = CheckCollisionPointRec(GetMousePosition(), button);
-    DrawButton(button, label, hover ? KUMKUM : Faded(FLOUR, 0.15f));
+  // Red when on (or under the mouse)
+  static void DrawDoorstepButton(Rectangle button, const char *label, bool on) {
+    const bool hover =
+        !TouchUi() && CheckCollisionPointRec(GetMousePosition(), button);
+    DrawButton(button, label,
+               on ? KUMKUM : hover ? Faded(KUMKUM, 0.6f) : Faded(FLOUR, 0.15f));
   }
 };
 
@@ -565,14 +654,35 @@ std::unique_ptr<Scene> MakeIntroScene() {
   return std::unique_ptr<Scene>(new IntroScene());
 }
 
+// The Play scenes, by name. A function's own static, so it exists before the
+// other files' PLAY_SCENE lines run (their order isn't known).
+static std::map<std::string, SceneMaker> &PlayScenes() {
+  static std::map<std::string, SceneMaker> scenes;
+  return scenes;
+}
+bool RegisterPlayScene(const char *name, SceneMaker make) {
+  PlayScenes()[name] = make;
+  return true;
+}
+SceneMaker FindPlayScene(const std::string &name) {
+  auto found = PlayScenes().find(name);
+  return found == PlayScenes().end() ? nullptr : found->second;
+}
+
 std::unique_ptr<Scene> MakeScene(const Step &step) {
   std::unique_ptr<Scene> scene;
   switch (step.type) {
+  case StepType::Play:
+    if (SceneMaker make = FindPlayScene(step.play))
+      scene = make(step);
+    else // (--check-pages reports a missing one)
+      scene.reset(new DialogueScene(step));
+    break;
   case StepType::Talk:
     scene.reset(new DialogueScene(step));
     break;
   case StepType::Puzzle:
-    scene = MakePuzzleScene(step.page);
+    scene = MakePuzzleScene(step.page, step.lookOnly);
     break;
   case StepType::Doorstep:
     scene.reset(new DoorstepScene());

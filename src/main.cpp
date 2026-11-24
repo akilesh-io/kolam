@@ -2,20 +2,32 @@
 //
 // The game is always on exactly one screen:
 //   Intro -> Home -> (ConfirmNewGame) -> Playing <-> Paused
-// Settings can be opened from Home or Paused, and goes back to where it came
-// from. While Playing, `scene` is the current step of the current chapter
-// (see Chapters() in story.cpp).
+// Settings and Chapters can be opened from Home or Paused, and go back to
+// where they came from. Mechanics (from Home) lists the kolam book's pages
+// to play outside the story: Mechanics <-> Practising. Chapters plays any chapter, reached or not, from its
+// title card. While Playing, `scene` is the current step of the current
+// chapter (see Chapters() in story.cpp).
 // Progress is saved automatically at the start of every step.
 #include <algorithm>
 #include <cstring>
 
 #include "game.h"
 
+#if defined(PLATFORM_IOS)
+// On iPhone the app starts in SDL (UIKit), which then calls main() below
+// (renamed SDL_main by this header)
+#include <SDL_hints.h>
+#include <SDL_main.h>
+#endif
+
 enum class Screen {
   Intro,
   Home,
   ConfirmNewGame,
-  Chapters, // chapter select
+  Chapters,   // chapter select
+  Mechanics,  // the kolam book's pages, to play outside the story
+  Practising, // playing one of those pages
+  Help,       // "How to play", over whatever was being played
   Settings,
   Playing,
   Paused
@@ -26,6 +38,7 @@ enum HomeRow {
   HOME_CONTINUE,
   HOME_NEW_GAME,
   HOME_CHAPTERS,
+  HOME_MECHANICS,
   HOME_SETTINGS,
   HOME_EXIT
 };
@@ -38,25 +51,34 @@ enum ScreenShape {
   SHAPE_SQUARE,
   SHAPE_COUNT
 };
-const char *SHAPE_NAMES[SHAPE_COUNT] = {"16:9", "Fill screen", "4:3", "Square"};
-enum PauseRow { PAUSE_RESUME, PAUSE_SAVE, PAUSE_SETTINGS, PAUSE_MAIN_MENU };
-enum SettingsRow {
-  MASTER_VOLUME,
-  MUSIC_VOLUME,
-  TEXT_SPEED,
-  DISPLAY,
-  SCREEN_SHAPE,
-  SCREEN_EDGES,
-  RESET,
-  BACK
+enum PauseRow {
+  PAUSE_RESUME,
+  PAUSE_HELP,
+  PAUSE_SAVE,
+  PAUSE_CHAPTERS,
+  PAUSE_SETTINGS,
+  PAUSE_MAIN_MENU
+};
+// The pause menu over a game opened from the Mechanics page
+enum PracticePauseRow {
+  PRACTICE_RESUME,
+  PRACTICE_HELP,
+  PRACTICE_SETTINGS,
+  PRACTICE_BACK,
+  PRACTICE_MAIN_MENU
 };
 
 static Screen screen = Screen::Intro;
 static Screen settingsReturnTo =
     Screen::Home;                    // where "Back" goes from Settings
+static Screen helpReturnTo = Screen::Playing; // where "Got it" goes
+static Screen chaptersReturnTo =
+    Screen::Home;                    // where "Back" goes from Chapters
 static std::unique_ptr<Scene> scene; // the intro, or the current story step
 static int chapter = 0;              // index into Chapters()
 static int step = -1;                // step in the chapter; -1 = its title card
+static bool pausedPractice = false; // the pause menu is over a Mechanics game
+static int practicePage = 0; // played from Mechanics: a page, or MECHANICS_KINDS + a kind
 static SaveGame save;                // what "Continue" loads
 static Menu menu;                    // the buttons of the current screen
 static float homeTime = 0;           // drives the home screen animation
@@ -89,7 +111,7 @@ const Color EDGE_TINT = {80, 80, 80, 255}; // how dark the soft edges are
   "  float grey = dot(c, vec3(0.299, 0.587, 0.114));\n"                        \
   "  return mix(vec3(grey), c, colour);\n"                                     \
   "}\n"
-#if defined(PLATFORM_ANDROID)
+#if defined(PLATFORM_PHONE) // OpenGL ES 2: GLSL ES 1.00
 static const char *COLOUR_SHADER =
     "#version 100\nprecision mediump float;\n#define TEXTURE texture2D\n"
     "varying vec2 fragTexCoord;\n" SHADER_BODY
@@ -102,52 +124,15 @@ static const char *COLOUR_SHADER =
 #endif
 
 //------------------------------------------------------------------------------
-// Settings
+// Settings (the screen itself is in settings_screen.cpp)
 //------------------------------------------------------------------------------
-static std::vector<MenuItem> SettingsItems() {
-  const std::string display = settings.fullscreen ? "Fullscreen" : "Windowed";
-  return {
-      {"Master volume:  < " + std::to_string(settings.masterVolume) + "% >"},
-      {"Music volume:  < " + std::to_string(settings.musicVolume) + "% >"},
-      {"Text speed:  < " + std::string(TextSpeedName()) + " >"},
-      {"Display:  < " + display + " >"},
-      {"Screen shape:  < " + std::string(SHAPE_NAMES[settings.screenShape]) +
-       " >"},
-      {std::string("Screen edges:  < ") +
-       (settings.softEdges ? "Soft glow" : "Black bars") + " >"},
-      {"Reset to defaults"},
-      {"Back"},
-  };
-}
-
-static int ClampVolume(int volume) {
-  return std::max(0, std::min(100, volume));
-}
-
-static void ChangeSetting(int row, int direction) {
-  if (row == MASTER_VOLUME)
-    settings.masterVolume = ClampVolume(settings.masterVolume + direction * 10);
-  if (row == MUSIC_VOLUME)
-    settings.musicVolume = ClampVolume(settings.musicVolume + direction * 10);
-  if (row == TEXT_SPEED)
-    settings.textSpeed =
-        (settings.textSpeed + direction + TEXT_SPEED_COUNT) % TEXT_SPEED_COUNT;
-  if (row == DISPLAY)
-    settings.fullscreen = !settings.fullscreen;
-  if (row == SCREEN_SHAPE)
-    settings.screenShape =
-        (settings.screenShape + direction + SHAPE_COUNT) % SHAPE_COUNT;
-  if (row == SCREEN_EDGES)
-    settings.softEdges = !settings.softEdges;
-}
-
 // Volume and fullscreen are re-applied every frame, so changes show at once
 static void ApplySettings() {
   SetMasterVolume(settings.masterVolume / 100.0f);
   // the song plays softer under a place's own sounds
   const float duck = AmbiencePlaying() ? 0.35f : 1.0f;
   SetMusicVolume(music, duck * settings.musicVolume / 100.0f);
-#if !defined(PLATFORM_ANDROID) // a phone is always fullscreen
+#if !defined(PLATFORM_PHONE) // a phone is always fullscreen
   if (IsWindowState(FLAG_BORDERLESS_WINDOWED_MODE) != settings.fullscreen)
     ToggleBorderlessWindowed();
 #endif
@@ -156,37 +141,96 @@ static void ApplySettings() {
 //------------------------------------------------------------------------------
 // Moving between screens
 //------------------------------------------------------------------------------
+// Is a story being played (or paused, with a menu over it)?
+static bool InStory() {
+  const bool overStory = !pausedPractice; // a pause menu over the story
+  return screen == Screen::Playing ||
+         (screen == Screen::Paused && overStory) ||
+         (screen == Screen::Settings && settingsReturnTo == Screen::Paused &&
+          overStory) ||
+         (screen == Screen::Chapters && chaptersReturnTo == Screen::Paused) ||
+         (screen == Screen::Help && (helpReturnTo == Screen::Playing ||
+                                     (helpReturnTo == Screen::Paused &&
+                                      overStory)));
+}
+
+// The chapter list shows this many chapters at once; a longer list scrolls,
+// so it fits on any screen shape
+const int CHAPTER_ROWS = 7;
+const float CHAPTERS_TITLE_SPACE = 72;   // above the list
+static std::vector<bool> chapterReached; // which ones get a dot
+
+// The panel behind the chapter list: its title, the list, and a hint below
+static Rectangle ChaptersPanel() {
+  const Rectangle back = menu.ItemRect((int)menu.items.size() - 1);
+  const float top = menu.top - CHAPTERS_TITLE_SPACE;
+  return {110, top, 500, back.y + back.height + 46 - top};
+}
+
+// The home menu goes under the title: in the middle, or on the left of a
+// wide screen (see HomeIsWide() in ui.cpp). Done every frame, as the window
+// or the screen shape can change.
+static void PlaceHomeMenu() {
+  menu.centerX = HomeColumnX();
+  menu.top = HomeIsWide() ? 262 : 326;
+}
+
 static void ShowScreen(Screen next) {
   screen = next;
-  SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+  if (next != Screen::Paused)
+    savedMessageTimer = 0; // "Game saved" only shows right after saving
 
   if (next == Screen::Home) {
     save = LoadGame();
     MenuItem continueItem = {"Continue", "No saved game yet", save.exists};
     if (save.exists)
       continueItem.detail = save.label + "  -  saved " + TimeAgo(save.savedAt);
-    menu.Set({continueItem, {"New Game"}, {"Chapters"}, {"Settings"}, {"Exit"}},
-             386);
+    menu.Set({continueItem,
+              {"New Game"},
+              {"Chapters"},
+              {"Mechanics"},
+              {"Settings"},
+              {"Exit"}},
+             326);
+    PlaceHomeMenu();
   }
   if (next == Screen::ConfirmNewGame)
     menu.Set({{"Keep my saved game"}, {"Start over"}}, 412, 280);
-  if (next ==
-      Screen::Chapters) { // every chapter; the ones reached can be played
+  if (next == Screen::Chapters) { // every chapter can be played, reached or not
     std::vector<MenuItem> items;
+    chapterReached.clear();
     for (int i = 0; i < (int)Chapters().size(); i++) {
       const Chapter &c = Chapters()[i];
-      const bool reached = ChapterUnlocked(i);
-      items.push_back({c.heading + ": " + c.title,
-                       reached ? c.where : "Not reached yet", reached});
+      items.push_back({c.heading + ": " + c.title, c.where});
+      chapterReached.push_back(ChapterUnlocked(i));
     }
     items.push_back({"Back"});
-    menu.Set(items, 190, 460);
+    menu.Set(items, 0, 460, CHAPTER_ROWS);
+    // In the middle of the screen, starting at the chapter being played
+    menu.top =
+        (STAGE_SIZE - ChaptersPanel().height) / 2 + CHAPTERS_TITLE_SPACE;
+    if (chaptersReturnTo == Screen::Paused)
+      menu.Select(chapter);
+    else if (save.exists)
+      menu.Select(save.chapter);
   }
   if (next == Screen::Settings)
-    menu.Set(SettingsItems(), 150, 440);
-  if (next == Screen::Paused)
-    menu.Set({{"Resume"}, {"Save game"}, {"Settings"}, {"Main menu"}}, 290,
-             280);
+    OpenSettingsScreen();
+  if (next == Screen::Paused && pausedPractice)
+    menu.Set({{"Resume"},
+              {"How to play"},
+              {"Settings"},
+              {"Back to the kolams"},
+              {"Main menu"}},
+             248, 280);
+  else if (next == Screen::Paused)
+    menu.Set({{"Resume"},
+              {"How to play"},
+              {"Save game"},
+              {"Chapters"},
+              {"Settings"},
+              {"Main menu"}},
+             238, 280);
 }
 
 // Plays a step of a chapter; step -1 is the chapter's title card
@@ -194,7 +238,7 @@ static void PlayStep(int chapterIndex, int stepIndex) {
   chapter = chapterIndex;
   step = stepIndex;
   if (step < 0) {
-    UnlockChapter(chapter); // it can now be replayed from Home -> Chapters
+    UnlockChapter(chapter); // marked as reached in Chapters
     scene = MakeChapterCard(Chapters()[chapter]);
   } else {
     scene = MakeScene(Chapters()[chapter].steps[step]);
@@ -205,11 +249,17 @@ static void PlayStep(int chapterIndex, int stepIndex) {
 
 // After a step: the next step, or the next chapter, or the end of the story
 static void NextStep() {
+  // a flashback scene played to its end is a memory Anu has back
+  const Step &done = Chapters()[chapter].steps[std::max(0, step)];
+  if (step >= 0 && IsFlashback(done) && !HasMemory(done.label)) {
+    AddMemory(done.label);
+    PlayEffect("bell", 0.45f);
+  }
   if (step + 1 < (int)Chapters()[chapter].steps.size()) {
     PlayStep(chapter, step + 1);
   } else if (chapter + 1 < (int)Chapters().size()) {
     PlayStep(chapter + 1, -1);
-  } else { // the end: back home (chapters stay unlocked for replaying)
+  } else { // the end: back home (chapters stay marked as reached)
     DeleteSave();
     scene.reset();
     ShowScreen(Screen::Home);
@@ -218,6 +268,11 @@ static void NextStep() {
 
 // "Chapter 1: Home - The night bus", for the pause menu
 static std::string WhereLabel() {
+  if (pausedPractice) // a game from the Mechanics page
+    return std::string("Mechanics  -  ") +
+           (practicePage >= MECHANICS_KINDS
+                ? KolamKindName(practicePage - MECHANICS_KINDS)
+                : Pages()[practicePage].title.c_str());
   const Chapter &c = Chapters()[chapter];
   const std::string label = c.heading + ": " + c.title;
   return step < 0 ? label : label + "  -  " + c.steps[step].label;
@@ -233,35 +288,14 @@ static void OpenSettings(Screen from) {
   ShowScreen(Screen::Settings);
 }
 
+static void OpenChapters(Screen from) {
+  chaptersReturnTo = from;
+  ShowScreen(Screen::Chapters);
+}
+
 //------------------------------------------------------------------------------
 // Update: react to input on the current screen
 //------------------------------------------------------------------------------
-static void UpdateSettingsScreen() {
-  int direction = 0; // -1 = lower / previous, +1 = higher / next
-  if (IsKeyPressed(KEY_LEFT) || IsKeyPressed(KEY_A))
-    direction = -1;
-  if (IsKeyPressed(KEY_RIGHT) || IsKeyPressed(KEY_D))
-    direction = 1;
-
-  const int chosen = menu.Update();
-  if (BackPressed() || chosen == BACK) {
-    SaveSettings();
-    ShowScreen(settingsReturnTo);
-    return;
-  }
-  if (chosen == RESET)
-    settings = Settings();
-  if (chosen >= 0) {
-    // Clicking the left half of a row turns it down, the right half up
-    const bool leftHalf = IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-                          GetMousePosition().x < STAGE_SIZE / 2.0f;
-    direction = leftHalf ? -1 : 1;
-  }
-  if (direction != 0)
-    ChangeSetting(menu.selected, direction);
-  menu.items = SettingsItems(); // refresh the values shown
-}
-
 static void UpdateScreen() {
   const float dt = GetFrameTime();
 
@@ -276,6 +310,11 @@ static void UpdateScreen() {
 
   case Screen::Home:
     homeTime += dt;
+    PlaceHomeMenu();
+    if (TouchUi() && BackPressed()) { // a phone's Back button closes the app
+      quit = true;
+      break;
+    }
     switch (menu.Update()) {
     case HOME_CONTINUE:
       progress = save.progress;
@@ -288,7 +327,11 @@ static void UpdateScreen() {
         StartNewGame();
       break;
     case HOME_CHAPTERS:
-      ShowScreen(Screen::Chapters);
+      OpenChapters(Screen::Home);
+      break;
+    case HOME_MECHANICS:
+      OpenMechanicsPage(0);
+      ShowScreen(Screen::Mechanics);
       break;
     case HOME_SETTINGS:
       OpenSettings(Screen::Home);
@@ -313,8 +356,12 @@ static void UpdateScreen() {
     homeTime += dt;
     const int chosen = menu.Update();
     if (BackPressed() || chosen == (int)Chapters().size()) {
-      ShowScreen(Screen::Home);
-    } else if (chosen >= 0) { // replay it, with what Anu had found by then
+      ShowScreen(chaptersReturnTo);
+      menu.selected = chaptersReturnTo == Screen::Paused ? (int)PAUSE_CHAPTERS
+                                                         : (int)HOME_CHAPTERS;
+    } else if (chosen >= 0) {
+      // Play it from its title card, with what Anu had found by then (or
+      // would have). That autosaves, so Continue carries on from here.
       progress = ProgressAtChapterStart(chosen);
       PlayStep(chosen, -1);
     }
@@ -323,11 +370,57 @@ static void UpdateScreen() {
 
   case Screen::Settings:
     homeTime += dt;
-    UpdateSettingsScreen();
+    if (UpdateSettingsScreen() || BackPressed()) {
+      SaveSettings();
+      ShowScreen(settingsReturnTo);
+    }
+    break;
+
+  case Screen::Mechanics: {
+    homeTime += dt;
+    const int chosen = UpdateMechanicsPage();
+    if (BackPressed() || chosen == MECHANICS_BACK) {
+      ShowScreen(Screen::Home);
+      menu.selected = HOME_MECHANICS;
+    } else if (chosen >= 0) {
+      practicePage = chosen;
+      if (chosen >= MECHANICS_KINDS) // one of the other kinds of kolam
+        scene = MakeKolamKindScene(chosen - MECHANICS_KINDS);
+      else
+        scene = MakePuzzleScene(chosen, false, true);
+      ShowScreen(Screen::Practising);
+    }
+    break;
+  }
+
+  case Screen::Practising:
+    if (InfoButton()) {
+      helpReturnTo = Screen::Practising;
+      ShowScreen(Screen::Help);
+      break;
+    }
+    if (BackPressed() || NavButton()) { // the pause menu, as in the story
+      pausedPractice = true;
+      ShowScreen(Screen::Paused);
+      break;
+    }
+    scene->Update();
+    if (scene->done) { // solved: back to the pages, the next one picked
+      MarkPageSolved(practicePage);
+      scene.reset();
+      OpenMechanicsPage(practicePage + 1);
+      ShowScreen(Screen::Mechanics);
+    }
     break;
 
   case Screen::Playing:
-    if (BackPressed()) {
+    if (InfoButton()) {
+      helpReturnTo = Screen::Playing;
+      ShowScreen(Screen::Help);
+      break;
+    }
+    if (BackPressed() || NavButton()) {
+      pausedPractice = false;
       ShowScreen(Screen::Paused);
       break;
     }
@@ -336,15 +429,46 @@ static void UpdateScreen() {
       NextStep();
     break;
 
+  case Screen::Help:
+    if (UpdateHelpScreen())
+      ShowScreen(helpReturnTo);
+    break;
+
   case Screen::Paused: {
     savedMessageTimer -= dt;
     const int chosen = menu.Update();
+    if (pausedPractice) { // over a game from the Mechanics page
+      if (BackPressed() || chosen == PRACTICE_RESUME)
+        ShowScreen(Screen::Practising);
+      if (chosen == PRACTICE_SETTINGS)
+        OpenSettings(Screen::Paused);
+      if (chosen == PRACTICE_HELP) {
+        helpReturnTo = Screen::Paused;
+        ShowScreen(Screen::Help);
+      }
+      if (chosen == PRACTICE_BACK) {
+        scene.reset();
+        OpenMechanicsPage(practicePage);
+        ShowScreen(Screen::Mechanics);
+      }
+      if (chosen == PRACTICE_MAIN_MENU) {
+        scene.reset();
+        ShowScreen(Screen::Home);
+      }
+      break;
+    }
     if (BackPressed() || chosen == PAUSE_RESUME)
       ShowScreen(Screen::Playing);
+    if (chosen == PAUSE_HELP) {
+      helpReturnTo = Screen::Paused;
+      ShowScreen(Screen::Help);
+    }
     if (chosen == PAUSE_SAVE) {
       SaveGameAt(chapter, step);
       savedMessageTimer = 2.5f;
     }
+    if (chosen == PAUSE_CHAPTERS)
+      OpenChapters(Screen::Paused);
     if (chosen == PAUSE_SETTINGS)
       OpenSettings(Screen::Paused);
     if (chosen == PAUSE_MAIN_MENU) { // progress was saved when this step began
@@ -360,29 +484,77 @@ static void UpdateScreen() {
 // Draw: everything is drawn on the 720x720 canvas
 //------------------------------------------------------------------------------
 static void DrawTitle() {
-  DrawTextCentered("Kolam", 360, 30, 84, FLOUR);
-  DrawTextCentered("a story about finding your way back", 360, 116, 22, MUTED,
+  const float x = HomeColumnX();
+  const float y = HomeIsWide() ? 92 : 30; // lower, over the menu, when wide
+  DrawTextCentered("Kolam", x, y, 84, FLOUR);
+  DrawTextCentered("a story about finding your way back", x, y + 86, 22, MUTED,
                    HAND_FONT);
+}
+
+// The chapter list, over the home screen or the paused story. A small dot
+// (a pulli) marks the chapters played before.
+static void DrawChaptersScreen() {
+  if (chaptersReturnTo == Screen::Paused)
+    scene->Draw();
+  else
+    DrawHomeBackground(homeTime);
+  DrawDim();
+  const Rectangle panel = ChaptersPanel();
+  DrawPanel(panel);
+  DrawTextCentered("Chapters", 360, panel.y + 14, 36, FLOUR);
+  menu.Draw();
+
+  bool anyReached = false;
+  for (int i = 0; i < (int)chapterReached.size(); i++) {
+    if (!chapterReached[i])
+      continue;
+    anyReached = true;
+    if (!menu.Shown(i))
+      continue;
+    const Rectangle r = menu.ItemRect(i);
+    const Color dot = i == menu.selected ? WHITE : Faded(FLOUR, 0.6f);
+    DrawCircleV({r.x + 24, r.y + r.height / 2}, 4, dot);
+  }
+
+  // A hint under the list, saying what the dot means once there is one
+  const float y = panel.y + panel.height - 32;
+  const std::string hint = TouchUi() ? "Back button to go back" : "Esc to go back";
+  if (!anyReached) {
+    DrawTextCentered(hint, 360, y, 15, MUTED);
+    return;
+  }
+  const std::string text = "played before    -    " + hint;
+  const float x = 360 - (MeasureString(text, 15) + 14) / 2;
+  DrawCircleV({x + 4, y + 9}, 4, Faded(FLOUR, 0.6f));
+  DrawString(text, x + 14, y, 15, MUTED);
 }
 
 static void DrawScreen() {
   switch (screen) {
   case Screen::Intro:
-  case Screen::Playing:
     scene->Draw();
+    break;
+
+  case Screen::Playing: // with a pause button, or back to the Mechanics page
+  case Screen::Practising:
+    scene->Draw();
+    DrawDialogueHint((float)GetTime());
+    DrawNavButton(false); // pause: the menu has Settings, and a way back
+    DrawInfoButton();     // (i): how to play
+    break;
+
+  case Screen::Mechanics:
+    DrawMechanicsPage(homeTime);
     break;
 
   case Screen::Home:
     DrawHomeBackground(homeTime);
     DrawTitle();
     menu.Draw();
-#if defined(PLATFORM_ANDROID)
-    DrawTextCentered("The Back button pauses the game", 360, 688, 15,
-                     Faded(MUTED, 0.7f));
-#else
-    DrawTextCentered("Esc pauses the game  -  F11 toggles fullscreen", 360, 688,
-                     15, Faded(MUTED, 0.7f));
-#endif
+    DrawTextCentered(TouchUi()
+                         ? "Pause any time with the button in the corner"
+                         : "Esc pauses the game  -  F11 toggles fullscreen",
+                     HomeColumnX(), 688, 15, Faded(MUTED, 0.7f));
     break;
 
   case Screen::ConfirmNewGame:
@@ -397,11 +569,7 @@ static void DrawScreen() {
     break;
 
   case Screen::Chapters:
-    DrawHomeBackground(homeTime);
-    DrawDim();
-    DrawPanel({130, 120, 460, 480});
-    DrawTextCentered("Chapters", 360, 136, 36, FLOUR);
-    menu.Draw();
+    DrawChaptersScreen();
     break;
 
   case Screen::Settings:
@@ -410,24 +578,26 @@ static void DrawScreen() {
     else
       DrawHomeBackground(homeTime);
     DrawDim();
-    DrawPanel({130, 76, 460, 600});
-    DrawTextCentered("Settings", 360, 88, 36, FLOUR);
-    menu.Draw();
-    DrawTextCentered("Left/Right or click to change  -  Esc to go back", 360,
-                     640, 15, MUTED);
+    DrawSettingsScreen();
+    break;
+
+  case Screen::Help:
+    scene->Draw();
+    DrawDim();
+    DrawHelpScreen((float)GetTime());
     break;
 
   case Screen::Paused:
     scene->Draw();
     DrawDim();
-    DrawPanel({200, 180, 320, 400});
-    DrawTextCentered("Paused", 360, 196, 38, FLOUR);
-    DrawTextCentered(WhereLabel(), 360, 244, 15, MUTED);
+    DrawPanel({200, 140, 320, pausedPractice ? 420.0f : 520.0f}); // 5 or 6 rows
+    DrawTextCentered("Paused", 360, 156, 38, FLOUR);
+    DrawTextCentered(WhereLabel(), 360, 204, 15, MUTED);
     menu.Draw();
     if (savedMessageTimer > 0) {
-      DrawTextCentered("Game saved", 360, 526, 22,
+      DrawTextCentered("Game saved", 360, 604, 22,
                        Faded(FLOUR, savedMessageTimer));
-      DrawTextCentered("Continue restarts this scene", 360, 552, 15,
+      DrawTextCentered("Continue restarts this scene", 360, 630, 15,
                        Faded(MUTED, savedMessageTimer));
     }
     break;
@@ -476,9 +646,7 @@ static void UpdateDevMode() {
   if (!IsKeyPressed(KEY_F5) && !changed)
     return;
   // In the story: save, so the next run carries on from this scene
-  const bool inStory =
-      screen == Screen::Playing || screen == Screen::Paused ||
-      (screen == Screen::Settings && settingsReturnTo == Screen::Paused);
+  const bool inStory = InStory();
   if (inStory)
     SaveGameAt(chapter, step);
   SaveFileText(DEV_RESTART_FILE, (char *)(inStory ? "resume" : "home"));
@@ -564,11 +732,15 @@ static void MakeBlur() {
 }
 
 static void UpdateDrawFrame() {
+  AutotestFrame(); // scripted input, when testing (autotest.cpp)
+  UpdateTouch();   // quick taps on a phone (touch.cpp)
+  UpdateGestures(); // swipes (gestures.cpp)
+  UpdateDialogueWait();
+  UpdateCursor();
   UpdateMusicStream(music);
   UpdateAudio();
   // Places have their own sounds only while a story is being played
-  if (screen != Screen::Playing && screen != Screen::Paused &&
-      !(screen == Screen::Settings && settingsReturnTo == Screen::Paused))
+  if (!InStory())
     PlayAmbience("");
   if (devMode)
     UpdateDevMode();
@@ -622,10 +794,7 @@ static void UpdateDrawFrame() {
 
   // While playing, the story decides how colourful the world is; menus are
   // always in colour. The colour changes slowly, so it seems to flow back.
-  const bool inStory =
-      screen == Screen::Playing || screen == Screen::Paused ||
-      (screen == Screen::Settings && settingsReturnTo == Screen::Paused);
-  const float wanted = inStory ? scene->colour : 1.0f;
+  const float wanted = InStory() ? scene->colour : 1.0f;
   shownColour += (wanted - shownColour) * std::min(1.0f, GetFrameTime() * 1.5f);
 
   BeginDrawing();
@@ -642,6 +811,10 @@ static void UpdateDrawFrame() {
   }
   DrawRenderTexture(canvas, target, WHITE);
   EndShaderMode();
+  // the pointer, on top and always in colour
+  DrawCursor({target.x + stageLeft * scale, target.y}, scale);
+  if (AutotestShots()) // the last scripted screenshot is taken
+    quit = true;
   EndDrawing();
 }
 
@@ -655,17 +828,26 @@ int main(int argc, char **argv) {
     dev = dev || strcmp(argv[i], "--dev") == 0;
     resume = resume || strcmp(argv[i], "--resume") == 0;
   }
+  if (!AutotestParse(argc, argv)) // --hidden, --shot, --click... (testing)
+    return 1;
 
 #if !defined(_DEBUG) // raylib's log messages only show in debug builds
   SetTraceLogLevel(LOG_NONE);
 #endif
 
   LoadSettings();
+#if defined(PLATFORM_IOS) // held sideways, either way round
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
   SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-  InitWindow(1280, 720, "Kolam"); // 16:9; resize it as you like
+  int width = 1280, height = 720; // 16:9; resize it as you like
+  AutotestWindowSize(&width, &height);
+  InitWindow(width, height, "Kolam");
   SetWindowMinSize(360, 360);
   SetExitKey(KEY_NULL); // Esc pauses instead of quitting
   InitAudioDevice();
+  InitCursor();
+  InitTouch();
 
   colourShader = LoadShaderFromMemory(nullptr, COLOUR_SHADER);
   if (const EmbeddedFile *song = FindAsset("assets/sole-of-kolam.mp3"))
