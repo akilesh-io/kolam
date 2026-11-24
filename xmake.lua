@@ -10,7 +10,7 @@
 --   xmake f -m release            back to normal builds
 --   ./release.sh                  finished games for Linux, Windows and Android (see release.sh)
 --   ./release.sh ios              the iPhone game, an unsigned .ipa (on a Mac only: GitHub
---                                 builds it on one, see .github/workflows/build.yml)
+--                                 builds it on one when asked, see .github/workflows/build.yml)
 --
 -- xmake downloads what it needs by itself the first time (raylib, and Zig for
 -- Windows / portable Linux builds). Everything it makes goes into build/ and .xmake/.

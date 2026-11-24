@@ -206,7 +206,7 @@ To change what a plain `./release.sh` builds, edit the `PLATFORMS="linux windows
 | `linux` | `kolam-linux-x86_64`, one single file | Most Linux systems: glibc 2.31 or newer (Ubuntu 20.04+, Debian 11+, Fedora, Arch...) |
 | `windows` | `kolam-windows-x86_64.exe`, one single file | Windows 10 and 11, with no DLLs or installer |
 | `android` | `kolam-android.apk` | Android 7.0 and newer, 64-bit ARM phones (nearly all phones since 2017) |
-| `ios` | `kolam-ios.ipa`, unsigned | iPhone and iPad, iOS 13 and newer. Only builds on a Mac with Xcode: without one, GitHub builds it (below) |
+| `ios` | `kolam-ios.ipa`, unsigned | iPhone and iPad, iOS 13 and newer. Only builds on a Mac with Xcode: without one, GitHub builds it when asked (below) |
 
 Everything (fonts, music, images) is inside each of them. Saves and settings go in the player's home folder (on Android, the app's private storage).
 
@@ -236,7 +236,7 @@ mv ~/Android/Sdk/cmdline-tools/cmdline-tools ~/Android/Sdk/cmdline-tools/latest
 - `res/drawable/icon.png` is the app icon.
 - `debug.keystore` is the key the APK is signed with (password `android`). **Keep it:** phones only accept an update to the app if it's signed with the same key. For the Play Store you'd make a proper release key instead.
 
-Every push is built on GitHub (`.github/workflows/build.yml`), which runs `./release.sh linux`, checks the puzzle pages, and attaches the Linux game to the run. A second job builds the iPhone game on one of GitHub's Macs (`./release.sh ios`) and attaches `kolam-ios.ipa`: open the run on GitHub (Actions tab) and download **kolam-ios** under *Artifacts*.
+GitHub builds the iPhone game on one of its Macs (`.github/workflows/build.yml`, running `./release.sh ios`). To save Actions time it only runs when asked: on GitHub, **Actions → iOS build → Run workflow**, or push a version tag (`git tag v0.2 && git push origin v0.2`). SDL and raylib are cached between runs, so only the game itself is rebuilt unless `xmake.lua` changes. Download **kolam-ios** under *Artifacts* on the run's page (kept for 7 days). Linux, Windows and Android are built locally with `./release.sh`.
 
 **How the iPhone build works.** raylib has no iOS layer of its own, so on iPhone it runs on [SDL](https://libsdl.org)'s, drawing with OpenGL ES 2 (the `raylib-sdl` package in `xmake.lua`; raylib's sound is built as Objective-C there, as iOS needs). The app's description (name, landscape, fullscreen) is `ios/Info.plist`. In the game's code, iPhone and Android are both "phones" (`PLATFORM_PHONE` in `game.h`): touch, no pointer, always fullscreen.
 

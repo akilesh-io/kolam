@@ -1,48 +1,50 @@
-# On every push: builds the finished Linux game with ./release.sh and checks that
-# every puzzle page is solvable. The game is attached to each run as "kolam-linux".
-# It also builds the iPhone game on a Mac (an iPhone app can only be built with
-# Apple's Xcode): an unsigned .ipa, attached as "kolam-ios". To put it on an
-# iPhone without a Mac, a sideloading tool signs it with an Apple ID (README).
-name: Build
+# Builds the iPhone game, an unsigned .ipa, on one of GitHub's Macs (an
+# iPhone app can only be built with Apple's Xcode). Download it from the run's
+# page, under Artifacts: "kolam-ios". To put it on an iPhone without a Mac, a
+# sideloading tool signs it with an Apple ID (see README).
+#
+# To save Actions time it only runs when asked:
+#   - by hand: GitHub > Actions > "iOS build" > "Run workflow"
+#   - or by pushing a version tag:  git tag v0.2 && git push origin v0.2
+# SDL and raylib are kept between runs (they only rebuild when xmake.lua
+# changes), a newer run cancels an older one still going, and a run that
+# hangs is stopped after 30 minutes.
+name: iOS build
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: xmake-io/github-action-setup-xmake@v1
-
-      - name: Install the X11 headers raylib needs
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev \
-            libxinerama-dev libxi-dev libxext-dev libxfixes-dev
-
-      - name: Build the game
-        run: ./release.sh linux
-
-      - name: Check the puzzle pages
-        run: build/release/kolam-linux-x86_64 --check-pages
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: kolam-linux
-          path: build/release/kolam-linux-x86_64
-
   ios:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+          actions-cache-folder: .xmake-cache # xmake itself, kept between runs
+
+      # the libraries the game is built on (SDL, raylib): built once, then kept
+      - uses: actions/cache@v6
+        with:
+          path: ~/.xmake/packages
+          key: ios-packages-${{ runner.os }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: ios-packages-${{ runner.os }}-
 
       - name: Build the iPhone game (unsigned .ipa)
         run: ./release.sh ios
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kolam-ios
           path: build/release/kolam-ios.ipa
+          retention-days: 7
+          compression-level: 0 # an .ipa is already zipped
